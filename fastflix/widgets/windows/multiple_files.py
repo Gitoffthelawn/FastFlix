@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QAbstractItemView
 from fastflix.language import t
 from fastflix.flix import probe
 from fastflix.shared import yes_no_message, error_message
-from fastflix.widgets.progress_bar import ProgressBar, Task
+from fastflix.widgets.status_bar import Task
 
 logger = logging.getLogger("fastflix")
 
@@ -155,7 +155,6 @@ class MultipleFilesWindow(QtWidgets.QWidget):
         super().__init__(None)
         self.app = app
         self.main = main
-        self.setStyleSheet("font-size: 14px")
         self.folder_name = str(self.app.fastflix.config.source_directory) or str(Path.home())
         self.setWindowTitle(t("Multiple Files"))
 
@@ -230,12 +229,14 @@ class MultipleFilesWindow(QtWidgets.QWidget):
         self.set_folder_name(folder_name)
 
         def check_to_add(file, list_of_items, bad_items, **_):
+            details = None
             try:
                 data = None
                 details = probe(self.app, file)
                 for stream in details.streams:
                     if stream.codec_type == "video":
                         data = (file.name, f"{stream.width}x{stream.height}", stream.codec_name)
+                        break
                 if not data:
                     raise Exception()
             except Exception:
@@ -243,6 +244,8 @@ class MultipleFilesWindow(QtWidgets.QWidget):
                 bad_items.append(file.name)
             else:
                 list_of_items.append(data)
+            finally:
+                del details
 
         items = []
         skipped = []
@@ -260,7 +263,7 @@ class MultipleFilesWindow(QtWidgets.QWidget):
                     )
                 )
 
-        ProgressBar(self.app, tasks, can_cancel=True, auto_run=True)
+        self.main.container.status_bar.run_tasks(tasks, can_cancel=True)
 
         self.files_area.table.update_items(items)
         if skipped:

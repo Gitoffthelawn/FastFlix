@@ -167,6 +167,7 @@ def generate_ending(
     output_fps: Union[str, None] = None,
     disable_rotate_metadata=False,
     copy_data=False,
+    data_tracks=None,
     **_,
 ):
     command = []
@@ -196,7 +197,22 @@ def generate_ending(
     if cover:
         command.extend(cover)
 
-    if copy_data:
+    if data_tracks:
+        has_data = False
+        has_attachment = False
+        for track in data_tracks:
+            if not track.enabled:
+                continue
+            command.extend(["-map", f"0:{track.index}"])
+            if track.codec_type == "data":
+                has_data = True
+            elif track.codec_type == "attachment":
+                has_attachment = True
+        if has_data:
+            command.extend(["-c:d", "copy"])
+        if has_attachment:
+            command.extend(["-c:t", "copy"])
+    elif copy_data:
         command.extend(["-map", "0:d", "-c:d", "copy"])
 
     if output_video and not null_ending:
@@ -213,6 +229,7 @@ def generate_filters(
     crop: Optional[dict] = None,
     scale=None,
     scale_filter="lanczos",
+    sar=None,
     remove_hdr=False,
     vaapi: bool = False,
     rotate=0,
@@ -221,6 +238,8 @@ def generate_filters(
     burn_in_subtitle_track=None,
     burn_in_subtitle_type=None,
     burn_in_file_index: int = 0,
+    source_width: Optional[int] = None,
+    source_height: Optional[int] = None,
     custom_filters=None,
     start_filters=None,
     raw_filters=False,
@@ -247,6 +266,8 @@ def generate_filters(
     if scale:
         if not vaapi:
             filter_list.append(f"scale={scale}:flags={scale_filter},setsar=1:1")
+    elif sar and sar != "1:1" and sar != "1/1":
+        filter_list.append("setsar=1:1")
     if rotate:
         if rotate == 1:
             filter_list.append("transpose=1")
@@ -310,7 +331,8 @@ def generate_filters(
                 filter_complex = f"[0:{selected_track}][{burn_in_file_index}:{burn_in_subtitle_track}]overlay[v]"
         else:
             filter_prefix = f"{filters}," if filters else ""
-            filter_complex = f"[0:{selected_track}]{filter_prefix}subtitles='{quoted_path(str(source))}':si={burn_in_subtitle_track}[v]"
+            original_size = f":original_size={source_width}x{source_height}" if source_width and source_height else ""
+            filter_complex = f"[0:{selected_track}]{filter_prefix}subtitles='{quoted_path(str(source))}':si={burn_in_subtitle_track}{original_size}[v]"
     elif filters:
         filter_complex = f"[0:{selected_track}]{filters}[v]"
     else:
@@ -390,7 +412,10 @@ def generate_all(
             burn_in_subtitle_track=burn_in_track,
             burn_in_subtitle_type=burn_in_type,
             burn_in_file_index=burn_in_file_index,
+            source_width=fastflix.current_video.width,
+            source_height=fastflix.current_video.height,
             scale=fastflix.current_video.scale,
+            sar=fastflix.current_video.sar,
             enable_opencl=enable_opencl,
             vaapi=vaapi,
             **filter_details,
@@ -402,6 +427,7 @@ def generate_all(
         cover=attachments_cmd,
         output_video=fastflix.current_video.video_settings.output_path,
         disable_rotate_metadata=encoder == "copy",
+        data_tracks=fastflix.current_video.data_tracks,
         **fastflix.current_video.video_settings.model_dump(),
     )
 

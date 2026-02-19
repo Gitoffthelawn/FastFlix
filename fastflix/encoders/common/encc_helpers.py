@@ -2,7 +2,7 @@
 import logging
 from typing import List
 
-from fastflix.models.video import SubtitleTrack, AudioTrack
+from fastflix.models.video import SubtitleTrack, AudioTrack, DataTrack
 from fastflix.encoders.common.audio import lossless
 from fastflix.models.fastflix import FastFlix
 from fastflix.models.encode import VCEEncCAVCSettings, VCEEncCAV1Settings, VCEEncCSettings
@@ -122,11 +122,14 @@ def build_audio(audio_tracks: list[AudioTrack], audio_streams) -> List[str]:
         if not track.conversion_codec or track.conversion_codec == "none":
             copies.append(str(audio_id))
         elif track.conversion_codec:
-            downmix = (
-                ["--audio-stream", f"{audio_id}?:{track.downmix}"]
-                if track.downmix and track.downmix != "No Downmix"
-                else []
-            )
+            if track.downmix and track.downmix != "No Downmix":
+                downmix = ["--audio-stream", f"{audio_id}?:{track.downmix}"]
+            else:
+                raw_layout = track.raw_info.get("channel_layout", "") if track.raw_info else ""
+                if raw_layout:
+                    downmix = ["--audio-stream", f"{audio_id}?:{raw_layout}"]
+                else:
+                    downmix = []
             bitrate_parts = []
             if track.conversion_codec not in lossless:
                 if track.conversion_bitrate:
@@ -168,17 +171,15 @@ def build_audio(audio_tracks: list[AudioTrack], audio_streams) -> List[str]:
 
 
 def build_subtitle(subtitle_tracks: list[SubtitleTrack], subtitle_streams, video_height: int) -> List[str]:
-    # Rigaya encoders only support embedded streams, filter out external tracks
-    subtitle_tracks = [t for t in subtitle_tracks if not t.external]
+    embedded_tracks = [t for t in subtitle_tracks if not t.external]
+    external_tracks = [t for t in subtitle_tracks if t.external]
     command_list = []
     copies = []
     stream_ids = get_stream_pos(subtitle_streams)
-    if not subtitle_tracks:
-        return []
 
     scale = ",scale=2.0" if video_height > 1800 else ""
 
-    for track in sorted(subtitle_tracks, key=lambda x: x.outdex):
+    for track in sorted(embedded_tracks, key=lambda x: x.outdex):
         if not track.enabled:
             continue
         sub_id = stream_ids[track.index]
@@ -197,10 +198,43 @@ def build_subtitle(subtitle_tracks: list[SubtitleTrack], subtitle_streams, video
 
             command_list.extend(["--sub-metadata", f"{sub_id}?language={track.language}"])
 
-    if not command_list:
+    for track in sorted(external_tracks, key=lambda x: x.outdex):
+        if not track.enabled:
+            continue
+        if track.burn_in:
+            ext_scale = ",scale=2.0" if video_height > 1800 else ""
+            command_list.extend(["--vpp-subburn", f"filename={track.file_path}{ext_scale}"])
+        else:
+            command_list.extend(["--sub-source", track.file_path])
+
+    if not command_list and not copies:
         return []
     result = []
     if copies:
         result.extend(["--sub-copy", ",".join(copies)])
     result.extend(command_list)
     return result
+
+
+def build_data(data_tracks: list[DataTrack], data_streams, attachment_streams) -> List[str]:
+    if not data_tracks:
+        return []
+    command_list = []
+    data_copies = []
+    attachment_copies = []
+    data_stream_ids = get_stream_pos(data_streams)
+    attachment_stream_ids = get_stream_pos(attachment_streams)
+
+    for track in data_tracks:
+        if not track.enabled:
+            continue
+        if track.codec_type == "data" and track.index in data_stream_ids:
+            data_copies.append(str(data_stream_ids[track.index]))
+        elif track.codec_type == "attachment" and track.index in attachment_stream_ids:
+            attachment_copies.append(str(attachment_stream_ids[track.index]))
+
+    if data_copies:
+        command_list.extend(["--data-copy", ",".join(data_copies)])
+    if attachment_copies:
+        command_list.extend(["--attachment-copy", ",".join(attachment_copies)])
+    return command_list

@@ -3,7 +3,7 @@
 import logging
 
 from box import Box
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtWidgets
 
 from fastflix.encoders.common.setting_panel import SettingPanel
 from fastflix.language import t
@@ -98,6 +98,7 @@ class SVT_AV1(SettingPanel):
         grid.addLayout(self.init_svtav1_params(), 7, 2, 1, 4)
 
         grid.setRowStretch(12, 1)
+        custom_layout = self._add_custom()
         guide_label = QtWidgets.QLabel(
             link(
                 "https://gitlab.com/AOMediaCodec/SVT-AV1/-/blob/master/Docs/Ffmpeg.md",
@@ -105,10 +106,9 @@ class SVT_AV1(SettingPanel):
                 app.fastflix.config.theme,
             )
         )
-        guide_label.setAlignment(QtCore.Qt.AlignBottom)
         guide_label.setOpenExternalLinks(True)
-        grid.addLayout(self._add_custom(), 14, 0, 1, 6)
-        grid.addWidget(guide_label, 15, 0, -1, 1)
+        custom_layout.addWidget(guide_label)
+        grid.addLayout(custom_layout, 14, 0, 1, 6)
         self.setLayout(grid)
         self.hide()
 
@@ -260,6 +260,32 @@ class SVT_AV1(SettingPanel):
         layout.addWidget(self.widgets.svtav1_params)
         return layout
 
+    def _set_film_grain_from_value(self, saved):
+        """Set film grain combo box and custom field from an integer value."""
+        if not saved or str(saved) == "0":
+            self.widgets.film_grain.setCurrentIndex(0)
+            return
+        matched = False
+        for i, opt in enumerate(film_grain_options):
+            if opt.startswith(str(saved) + " "):
+                self.widgets.film_grain.setCurrentIndex(i)
+                matched = True
+                break
+        if not matched:
+            self.widgets.film_grain.setCurrentIndex(len(film_grain_options) - 1)
+            self.widgets.custom_film_grain.setText(str(saved))
+        self.film_grain_update()
+
+    def update_profile(self):
+        saved = self.app.fastflix.config.encoder_opt(self.profile_name, "film_grain")
+        self._set_film_grain_from_value(saved)
+        super().update_profile()
+
+    def reload(self):
+        super().reload()
+        film_grain = self.app.fastflix.current_video.video_settings.video_encoder_settings.film_grain
+        self._set_film_grain_from_value(film_grain)
+
     def init_modes(self):
         return self._add_modes(recommended_bitrates, recommended_qp, qp_name="qp", qp_display_name="CRF/QP")
 
@@ -279,7 +305,10 @@ class SVT_AV1(SettingPanel):
             except (ValueError, TypeError):
                 film_grain = 0
         else:
-            film_grain = int(film_grain_text.split(" ")[0])
+            try:
+                film_grain = int(film_grain_text.split(" ")[0])
+            except (ValueError, TypeError):
+                film_grain = 0
 
         settings = SVTAV1Settings(
             speed=self.widgets.speed.currentText(),

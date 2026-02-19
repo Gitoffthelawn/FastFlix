@@ -265,6 +265,7 @@ class Config(BaseModel):
     sane_audio_selection: list = Field(
         default_factory=lambda: [
             "aac",
+            "aac_mf",
             "ac3",
             "alac",
             "dca",
@@ -302,6 +303,8 @@ class Config(BaseModel):
     pgs_ocr_language: str = "eng"
 
     use_keyframes_for_preview: bool = True
+    terms_accepted: bool = False
+    auto_detect_subtitles: bool = True
 
     @property
     def pgs_ocr_available(self) -> bool:

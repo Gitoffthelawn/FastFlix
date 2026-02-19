@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Union, Tuple
 
@@ -11,6 +12,7 @@ from fastflix.models.encode import (
     AttachmentTrack,
     AudioTrack,
     CopySettings,
+    DataTrack,
     GIFSettings,
     GifskiSettings,
     FFmpegNVENCSettings,
@@ -112,6 +114,7 @@ class VideoSettings(BaseModel):
     contrast: Optional[str] = None
     saturation: Optional[str] = None
     copy_data: bool = False
+    template_generated_name: str = ""
     video_encoder_settings: Optional[
         Union[
             x265Settings,
@@ -180,6 +183,7 @@ class Status(BaseModel):
     cancelled: bool = False
     subtitle_fixed: bool = False
     current_command: int = 0
+    encode_started_at: Optional[datetime] = None
 
     @property
     def ready(self) -> bool:
@@ -193,6 +197,7 @@ class Status(BaseModel):
         self.cancelled = False
         self.subtitle_fixed = False
         self.current_command = 0
+        self.encode_started_at = None
 
 
 class Video(BaseModel):
@@ -212,6 +217,7 @@ class Video(BaseModel):
     audio_tracks: list[AudioTrack] = Field(default_factory=list)
     subtitle_tracks: list[SubtitleTrack] = Field(default_factory=list)
     attachment_tracks: list[AttachmentTrack] = Field(default_factory=list)
+    data_tracks: list[DataTrack] = Field(default_factory=list)
 
     status: Status = Field(default_factory=Status)
     uuid: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -294,6 +300,13 @@ class Video(BaseModel):
         if not stream:
             return ""
         return stream.get("avg_frame_rate", "")
+
+    @property
+    def sar(self):
+        stream = self.current_video_stream
+        if not stream:
+            return ""
+        return stream.get("sample_aspect_ratio", "1:1")
 
     @property
     def scale(self):

@@ -11,7 +11,15 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from fastflix.exceptions import FastFlixInternalException
 from fastflix.language import t, Language
 from fastflix.models.fastflix_app import FastFlixApp
+from fastflix.naming import (
+    PRE_ENCODE_VARIABLES,
+    POST_ENCODE_VARIABLES,
+    ALL_VARIABLES,
+    generate_preview,
+    validate_template,
+)
 from fastflix.shared import error_message, link
+from fastflix.widgets.flow_layout import FlowLayout
 
 logger = logging.getLogger("fastflix")
 language_list = [v.name for v in iter_langs() if v.pt2b and v.pt1]
@@ -47,12 +55,13 @@ class Settings(QtWidgets.QWidget):
         self.config_file = self.app.fastflix.config.config_path
         self.setWindowTitle(t("Settings"))
         self.setMinimumSize(600, 200)
-        self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
+        self.setWindowFlags(self.windowFlags() | QtCore.Qt.Window)
 
         main_layout = QtWidgets.QVBoxLayout()
 
         tab_widget = QtWidgets.QTabWidget()
         tab_widget.addTab(self._build_settings_tab(), t("Settings"))
+        tab_widget.addTab(self._build_output_naming_tab(), t("Output Naming"))
         tab_widget.addTab(self._build_locations_tab(), t("Application Locations"))
         main_layout.addWidget(tab_widget)
 
@@ -198,6 +207,11 @@ class Settings(QtWidgets.QWidget):
         layout.addWidget(self.sticky_tabs, row, 0, 1, 2)
         row += 1
 
+        self.auto_detect_subtitles = QtWidgets.QCheckBox(t("Auto-detect external subtitle files"))
+        self.auto_detect_subtitles.setChecked(self.app.fastflix.config.auto_detect_subtitles)
+        layout.addWidget(self.auto_detect_subtitles, row, 0, 1, 3)
+        row += 1
+
         # Default Output Directory
         self.default_output_dir = QtWidgets.QCheckBox(t("Use same output directory as source file"))
         layout.addWidget(self.default_output_dir, row, 0, 1, 2)
@@ -263,6 +277,158 @@ class Settings(QtWidgets.QWidget):
 
         tab.setLayout(layout)
         return tab
+
+    def _build_output_naming_tab(self):
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout()
+
+        # Template editor
+        template_label = QtWidgets.QLabel(t("Output Filename Template"))
+        template_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(template_label)
+
+        template_row = QtWidgets.QHBoxLayout()
+        self.template_edit = QtWidgets.QLineEdit()
+        self.template_edit.setText(self.app.fastflix.config.output_name_format)
+        self.template_edit.setPlaceholderText("{source}-fastflix-{rand_4}")
+        self.template_edit.textChanged.connect(self._update_template_preview)
+        template_row.addWidget(self.template_edit)
+
+        reset_button = QtWidgets.QPushButton(t("Reset"))
+        reset_button.setFixedWidth(60)
+        reset_button.setToolTip(t("Reset to default template"))
+        reset_button.clicked.connect(lambda: self.template_edit.setText("{source}-fastflix-{rand_4}"))
+        template_row.addWidget(reset_button)
+
+        layout.addLayout(template_row)
+
+        # Live preview
+        preview_header = QtWidgets.QLabel(t("Preview:"))
+        preview_header.setStyleSheet("font-weight: bold; margin-top: 6px;")
+        layout.addWidget(preview_header)
+
+        self.template_preview = QtWidgets.QLabel()
+        self.template_preview.setWordWrap(True)
+        self.template_preview.setStyleSheet("color: #888; padding: 4px;")
+        layout.addWidget(self.template_preview)
+
+        # Validation status
+        self.template_status = QtWidgets.QLabel()
+        layout.addWidget(self.template_status)
+
+        # Pre-encode variable chips
+        pre_header = QtWidgets.QLabel(t("Pre-Encode Variables"))
+        pre_header.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        layout.addWidget(pre_header)
+
+        self._variable_chips = {}
+        pre_flow = FlowLayout(h_spacing=6, v_spacing=6)
+        pre_container = QtWidgets.QWidget()
+        for var in PRE_ENCODE_VARIABLES:
+            chip = self._make_chip(f"{{{var.name}}}", var.description, var.example, is_post=False)
+            self._variable_chips[var.name] = chip
+            pre_flow.addWidget(chip)
+        pre_container.setLayout(pre_flow)
+        layout.addWidget(pre_container)
+
+        # Post-encode variable chips
+        post_header = QtWidgets.QLabel(t("Post-Encode Variables"))
+        post_header.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        layout.addWidget(post_header)
+        post_subtitle = QtWidgets.QLabel(t("Resolved after encoding completes; file will be renamed automatically"))
+        post_subtitle.setStyleSheet("color: #888; font-size: 11px;")
+        layout.addWidget(post_subtitle)
+
+        post_flow = FlowLayout(h_spacing=6, v_spacing=6)
+        post_container = QtWidgets.QWidget()
+        for var in POST_ENCODE_VARIABLES:
+            chip = self._make_chip(f"{{{var.name}}}", var.description, var.example, is_post=True)
+            self._variable_chips[var.name] = chip
+            post_flow.addWidget(chip)
+        post_container.setLayout(post_flow)
+        layout.addWidget(post_container)
+
+        # Variable reference table (always visible)
+        self.ref_table = QtWidgets.QTableWidget()
+        self.ref_table.setColumnCount(4)
+        self.ref_table.setHorizontalHeaderLabels([t("Variable"), t("Description"), t("Phase"), t("Example")])
+        self.ref_table.setRowCount(len(ALL_VARIABLES))
+        self.ref_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.ref_table.horizontalHeader().setStretchLastSection(True)
+        self.ref_table.verticalHeader().setVisible(False)
+        for row, var in enumerate(ALL_VARIABLES):
+            self.ref_table.setItem(row, 0, QtWidgets.QTableWidgetItem(f"{{{var.name}}}"))
+            self.ref_table.setItem(row, 1, QtWidgets.QTableWidgetItem(var.description))
+            phase_text = t("Pre-Encode") if var.phase.value == "pre_encode" else t("Post-Encode")
+            self.ref_table.setItem(row, 2, QtWidgets.QTableWidgetItem(phase_text))
+            self.ref_table.setItem(row, 3, QtWidgets.QTableWidgetItem(var.example))
+        self.ref_table.resizeColumnsToContents()
+        layout.addWidget(self.ref_table)
+
+        # Initialize preview
+        self._update_template_preview()
+
+        tab.setLayout(layout)
+        return tab
+
+    _CHIP_STYLE_PRE = (
+        "QPushButton { background-color: #2a6e9e; color: white; border-radius: 10px; "
+        "padding: 4px 10px; font-size: 12px; border: 1px solid #3a8ebe; }"
+        "QPushButton:hover { background-color: #3a7eae; }"
+    )
+    _CHIP_STYLE_POST = (
+        "QPushButton { background-color: #5b4a8a; color: white; border-radius: 10px; "
+        "padding: 4px 10px; font-size: 12px; border: 1px solid #7a6aaa; }"
+        "QPushButton:hover { background-color: #6b5a9a; }"
+    )
+    _CHIP_STYLE_DISABLED = (
+        "QPushButton { background-color: #555; color: #888; border-radius: 10px; "
+        "padding: 4px 10px; font-size: 12px; border: 1px solid #666; }"
+    )
+
+    def _make_chip(self, text, description, example, is_post=False):
+        """Create a clickable variable chip button."""
+        chip = QtWidgets.QPushButton(text)
+        chip.setToolTip(f"{description}\n{t('Example')}: {example}")
+        chip.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+        chip.setProperty("is_post", is_post)
+        chip.setStyleSheet(self._CHIP_STYLE_POST if is_post else self._CHIP_STYLE_PRE)
+        chip.clicked.connect(lambda: self._insert_variable(text))
+        return chip
+
+    def _insert_variable(self, text):
+        """Insert variable text at cursor position in template editor."""
+        cursor_pos = self.template_edit.cursorPosition()
+        current = self.template_edit.text()
+        new_text = current[:cursor_pos] + text + current[cursor_pos:]
+        self.template_edit.setText(new_text)
+        self.template_edit.setCursorPosition(cursor_pos + len(text))
+        self.template_edit.setFocus()
+
+    def _update_template_preview(self):
+        """Update the live preview, validation status, and chip enabled states."""
+        template = self.template_edit.text()
+        is_valid, message = validate_template(template)
+
+        if is_valid:
+            self.template_status.setText(f'<span style="color: green;">\u2714 {message}</span>')
+        else:
+            self.template_status.setText(f'<span style="color: red;">\u2718 {message}</span>')
+
+        preview = generate_preview(template)
+        self.template_preview.setText(preview)
+
+        # Gray out chips for variables already present in the template
+        for var_name, chip in self._variable_chips.items():
+            already_used = f"{{{var_name}}}" in template
+            chip.setEnabled(not already_used)
+            if already_used:
+                chip.setStyleSheet(self._CHIP_STYLE_DISABLED)
+                chip.setCursor(QtGui.QCursor(QtCore.Qt.ForbiddenCursor))
+            else:
+                is_post = chip.property("is_post")
+                chip.setStyleSheet(self._CHIP_STYLE_POST if is_post else self._CHIP_STYLE_PRE)
+                chip.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
 
     def _build_locations_tab(self):
         tab = QtWidgets.QWidget()
@@ -389,7 +555,7 @@ class Settings(QtWidgets.QWidget):
         for det_row, (detected, name, description) in enumerate(programs):
             icon = "\u2714" if detected else "\u2718"
             color = "green" if detected else "red"
-            status_label = QtWidgets.QLabel(f'<span style="color: {color}; font-size: 14px;">{icon}</span>')
+            status_label = QtWidgets.QLabel(f'<span style="color: {color};">{icon}</span>')
             detected_layout.addWidget(status_label, det_row, 0)
             detected_layout.addWidget(QtWidgets.QLabel(f"<b>{name}</b>"), det_row, 1)
             detected_layout.addWidget(QtWidgets.QLabel(description), det_row, 2)
@@ -420,8 +586,11 @@ class Settings(QtWidgets.QWidget):
         new_ffprobe = Path(self.ffprobe_path.text())
         new_work_dir = Path(self.work_dir.text())
         restart_needed = False
+        encoder_reload_needed = False
         try:
             updated_ffmpeg = self.update_ffmpeg(new_ffmpeg)
+            if updated_ffmpeg:
+                encoder_reload_needed = True
             self.update_ffprobe(new_ffprobe)
         except FastFlixInternalException:
             return
@@ -429,7 +598,7 @@ class Settings(QtWidgets.QWidget):
         try:
             new_work_dir.mkdir(exist_ok=True, parents=True)
         except OSError:
-            error_message(f'{t("Could not create / access work directory")} "{new_work_dir}"')
+            error_message(f'{t("Could not create / access work directory")} "{new_work_dir}"', parent=self)
         else:
             self.app.fastflix.config.work_path = new_work_dir
         self.app.fastflix.config.use_sane_audio = self.use_sane_audio.isChecked()
@@ -451,7 +620,8 @@ class Settings(QtWidgets.QWidget):
                 self.app.fastflix.config.language = Language(self.language_combo.currentText()).pt3
         except InvalidLanguageValue:
             error_message(
-                f"{t('Could not set language to')} {self.language_combo.currentText()}\n {t('Please report this issue')}"
+                f"{t('Could not set language to')} {self.language_combo.currentText()}\n {t('Please report this issue')}",
+                parent=self,
             )
         self.app.fastflix.config.disable_version_check = self.disable_version_check.isChecked()
         log_level = (self.logger_level_widget.currentIndex() + 1) * 10
@@ -461,27 +631,27 @@ class Settings(QtWidgets.QWidget):
 
         new_nvencc = Path(self.nvencc_path.text()) if self.nvencc_path.text().strip() else None
         if str(self.app.fastflix.config.nvencc) != str(new_nvencc):
-            restart_needed = True
+            encoder_reload_needed = True
         self.app.fastflix.config.nvencc = new_nvencc
 
         new_qsvencc = Path(self.qsvenc_path.text()) if self.qsvenc_path.text().strip() else None
         if str(self.app.fastflix.config.qsvencc) != str(new_qsvencc):
-            restart_needed = True
+            encoder_reload_needed = True
         self.app.fastflix.config.qsvencc = new_qsvencc
 
         new_vce = Path(self.vceenc_path.text()) if self.vceenc_path.text().strip() else None
         if str(self.app.fastflix.config.vceencc) != str(new_vce):
-            restart_needed = True
+            encoder_reload_needed = True
         self.app.fastflix.config.vceencc = new_vce
 
         new_hdr10_parser = Path(self.hdr10_parser_path.text()) if self.hdr10_parser_path.text().strip() else None
         if str(self.app.fastflix.config.hdr10plus_parser) != str(new_hdr10_parser):
-            restart_needed = True
+            encoder_reload_needed = True
         self.app.fastflix.config.hdr10plus_parser = new_hdr10_parser
 
         new_gifski = Path(self.gifski_path.text()) if self.gifski_path.text().strip() else None
         if str(self.app.fastflix.config.gifski) != str(new_gifski):
-            restart_needed = True
+            encoder_reload_needed = True
         self.app.fastflix.config.gifski = new_gifski
 
         new_output_path = None
@@ -499,16 +669,28 @@ class Settings(QtWidgets.QWidget):
         if self.app.fastflix.config.ui_scale != old_scale:
             restart_needed = True
 
+        # Output naming template
+        new_template = self.template_edit.text().strip()
+        if new_template:
+            is_valid, msg = validate_template(new_template)
+            if not is_valid:
+                error_message(f"{t('Invalid output naming template')}: {msg}", parent=self)
+                return
+            self.app.fastflix.config.output_name_format = new_template
+        else:
+            self.app.fastflix.config.output_name_format = "{source}-fastflix-{rand_4}"
+
         self.app.fastflix.config.clean_old_logs = self.clean_old_logs_button.isChecked()
         self.app.fastflix.config.sticky_tabs = self.sticky_tabs.isChecked()
         self.app.fastflix.config.disable_complete_message = self.disable_end_message.isChecked()
         self.app.fastflix.config.disable_deinterlace_check = self.disable_deinterlace_button.isChecked()
         self.app.fastflix.config.use_keyframes_for_preview = self.use_keyframes_for_preview.isChecked()
+        self.app.fastflix.config.auto_detect_subtitles = self.auto_detect_subtitles.isChecked()
 
-        self.main.config_update()
+        self.main.config_update(encoder_reload_needed=encoder_reload_needed)
         self.app.fastflix.config.save()
-        if updated_ffmpeg or old_lang != self.app.fastflix.config.language or restart_needed:
-            error_message(t("Please restart FastFlix to apply settings"))
+        if old_lang != self.app.fastflix.config.language or restart_needed:
+            error_message(t("Please restart FastFlix to apply settings"), parent=self)
         self.close()
 
     def select_ffmpeg(self):

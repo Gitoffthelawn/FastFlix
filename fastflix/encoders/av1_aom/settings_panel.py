@@ -88,14 +88,14 @@ class AV1(SettingPanel):
         self.ffmpeg_level = QtWidgets.QLabel()
         grid.addWidget(self.ffmpeg_level, 8, 2, 1, 4)
 
-        grid.addLayout(self._add_custom(), 10, 0, 1, 6)
-        grid.setRowStretch(9, 1)
+        custom_layout = self._add_custom()
         guide_label = QtWidgets.QLabel(
             link("https://trac.ffmpeg.org/wiki/Encode/AV1", t("FFMPEG AV1 Encoding Guide"), app.fastflix.config.theme)
         )
-        guide_label.setAlignment(QtCore.Qt.AlignBottom)
         guide_label.setOpenExternalLinks(True)
-        grid.addWidget(guide_label, 11, 0, -1, 1)
+        custom_layout.addWidget(guide_label)
+        grid.addLayout(custom_layout, 10, 0, 1, 6)
+        grid.setRowStretch(9, 1)
 
         self.hdr10plus_signal.connect(self.done_hdr10plus_extract)
         self.hdr10plus_ffmpeg_signal.connect(lambda x: self.ffmpeg_level.setText(x))
@@ -221,21 +221,31 @@ class AV1(SettingPanel):
         self.widgets.custom_denoise.setDisabled(not custom)
         self.main.page_update()
 
+    def _set_denoise_from_value(self, saved):
+        """Set denoise combo box and custom field from an integer value."""
+        if not saved or str(saved) == "0":
+            self.widgets.denoise.setCurrentIndex(0)
+            return
+        matched = False
+        for i, opt in enumerate(denoise_options):
+            if opt.startswith(str(saved) + " "):
+                self.widgets.denoise.setCurrentIndex(i)
+                matched = True
+                break
+        if not matched:
+            self.widgets.denoise.setCurrentIndex(len(denoise_options) - 1)
+            self.widgets.custom_denoise.setText(str(saved))
+        self.denoise_update()
+
+    def update_profile(self):
+        saved = self.app.fastflix.config.encoder_opt(self.profile_name, "denoise_noise_level")
+        self._set_denoise_from_value(saved)
+        super().update_profile()
+
     def reload(self):
         super().reload()
         saved = self.app.fastflix.current_video.video_settings.video_encoder_settings.denoise_noise_level
-        if saved and str(saved) != "0":
-            matched = False
-            for i, opt in enumerate(denoise_options):
-                if opt.startswith(str(saved)):
-                    self.widgets.denoise.setCurrentIndex(i)
-                    matched = True
-                    break
-            if not matched:
-                self.widgets.denoise.setCurrentIndex(len(denoise_options) - 1)
-                self.widgets.custom_denoise.setText(str(saved))
-        else:
-            self.widgets.denoise.setCurrentIndex(0)
+        self._set_denoise_from_value(saved)
 
     def init_aom_params(self):
         layout = QtWidgets.QHBoxLayout()
