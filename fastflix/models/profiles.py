@@ -12,6 +12,7 @@ from fastflix.models.encode import (
     GIFSettings,
     GifskiSettings,
     FFmpegNVENCSettings,
+    FFmpegAV1NVENCSettings,
     SVTAV1Settings,
     VP9Settings,
     WebPSettings,
@@ -158,6 +159,7 @@ class Profile(BaseModel):
     output_type: str = ".mkv"
 
     audio_filters: Optional[list[AudioMatch] | bool] = None
+    data_passthrough: Optional[bool] = None  # None = passthrough all, True = passthrough all, False = remove all
     # subtitle_filters: Optional[list[SubtitleMatch]] = None
 
     # Legacy Audio, here to properly import old profiles
@@ -188,6 +190,7 @@ class Profile(BaseModel):
     modify_settings: Optional[ModifySettings] = None
     copy_settings: Optional[CopySettings] = None
     ffmpeg_hevc_nvenc: Optional[FFmpegNVENCSettings] = None
+    ffmpeg_av1_nvenc: Optional[FFmpegAV1NVENCSettings] = None
     qsvencc_hevc: Optional[QSVEncCSettings] = None
     qsvencc_av1: Optional[QSVEncCAV1Settings] = None
     qsvencc_avc: Optional[QSVEncCH264Settings] = None

@@ -7,7 +7,13 @@ import coloredlogs
 import reusables
 from PySide6 import QtGui, QtWidgets, QtCore
 
-from fastflix.flix import ffmpeg_audio_encoders, ffmpeg_configuration, ffprobe_configuration, ffmpeg_opencl_support
+from fastflix.flix import (
+    ffmpeg_audio_encoders,
+    ffmpeg_video_encoders,
+    ffmpeg_configuration,
+    ffprobe_configuration,
+    ffmpeg_opencl_support,
+)
 from fastflix.language import t
 from fastflix.models.config import Config, MissingFF
 from fastflix.models.fastflix import FastFlix
@@ -86,6 +92,7 @@ def init_encoders(app: FastFlixApp, **_):
     from fastflix.encoders.gif import main as gif_plugin
     from fastflix.encoders.gifski import main as gifski_plugin
     from fastflix.encoders.ffmpeg_hevc_nvenc import main as nvenc_plugin
+    from fastflix.encoders.ffmpeg_av1_nvenc import main as ffmpeg_av1_nvenc_plugin
     from fastflix.encoders.hevc_x265 import main as hevc_plugin
     from fastflix.encoders.rav1e import main as rav1e_plugin
     from fastflix.encoders.svt_av1 import main as svt_av1_plugin
@@ -115,6 +122,7 @@ def init_encoders(app: FastFlixApp, **_):
         nvenc_plugin,
         hevc_videotoolbox_plugin,
         h264_videotoolbox_plugin,
+        ffmpeg_av1_nvenc_plugin,
         av1_plugin,
         rav1e_plugin,
         svt_av1_plugin,
@@ -171,16 +179,81 @@ def init_encoders(app: FastFlixApp, **_):
             # if "H.264/AVC" in app.fastflix.config.vceencc_encoders:
             encoders.insert(encoders.index(avc_plugin), vceencc_avc_plugin)
 
+    # Mapping from requires values to search terms for ffmpeg -encoders output.
+    # Most requires values (e.g. "vaapi", "libx264") appear directly in encoder names,
+    # but some compilation flags don't match encoder names and need explicit mapping.
+    requires_to_encoder = {
+        "cuda-llvm": "nvenc",
+    }
+
+    def _encoder_available(requires: str) -> bool:
+        if requires in app.fastflix.ffmpeg_config:
+            return True
+        search_term = requires_to_encoder.get(requires, requires)
+        return any(search_term in enc for enc in (app.fastflix.video_encoders or []))
+
     app.fastflix.encoders = {
         encoder.name: encoder
         for encoder in encoders
-        if (not getattr(encoder, "requires", None)) or encoder.requires in app.fastflix.ffmpeg_config or DEVMODE
+        if (not getattr(encoder, "requires", None)) or _encoder_available(encoder.requires) or DEVMODE
     }
 
 
 def init_fastflix_directories(app: FastFlixApp):
     app.fastflix.data_path.mkdir(parents=True, exist_ok=True)
     app.fastflix.log_path.mkdir(parents=True, exist_ok=True)
+
+
+def _handle_ffmpeg_version_warning_windows(app: FastFlixApp, container: Container):
+    msg = QtWidgets.QMessageBox(container)
+    msg.setIcon(QtWidgets.QMessageBox.Warning)
+    msg.setWindowTitle(t("FFmpeg Version Warning"))
+    msg.setText(
+        t(
+            "Your FFmpeg (libavcodec {version}) is older than the required FFmpeg 8.0+ (libavcodec 62+)."
+            " Some features may not work correctly."
+        ).format(version=app.fastflix.libavcodec_version)
+    )
+    cb = QtWidgets.QCheckBox(t("Don't show this warning again"))
+    msg.setCheckBox(cb)
+    download_btn = msg.addButton(t("Download Latest"), QtWidgets.QMessageBox.AcceptRole)
+    msg.addButton(t("Ignore"), QtWidgets.QMessageBox.RejectRole)
+    msg.exec()
+
+    if msg.clickedButton() == download_btn:
+        try:
+            container.status_bar.run_tasks(
+                [Task(t("Downloading FFmpeg"), grab_stable_ffmpeg)],
+                signal_task=True,
+                can_cancel=True,
+            )
+            ffmpeg_configuration(app)
+        except Exception:
+            logger.exception("Failed to download FFmpeg")
+
+    if cb.isChecked():
+        app.fastflix.config.suppress_ffmpeg_version_warning = True
+        app.fastflix.config.save()
+
+
+def _handle_ffmpeg_version_warning_other(app: FastFlixApp):
+    msg = QtWidgets.QMessageBox()
+    msg.setIcon(QtWidgets.QMessageBox.Warning)
+    msg.setWindowTitle(t("FFmpeg Version Warning"))
+    msg.setText(
+        t(
+            "Your FFmpeg (libavcodec {version}) is older than the required FFmpeg 8.0+ (libavcodec 62+)."
+            " Please update FFmpeg. Visit https://ffmpeg.org/download.html"
+        ).format(version=app.fastflix.libavcodec_version)
+    )
+    cb = QtWidgets.QCheckBox(t("Don't show this warning again"))
+    msg.setCheckBox(cb)
+    msg.addButton(t("OK"), QtWidgets.QMessageBox.AcceptRole)
+    msg.exec()
+
+    if cb.isChecked():
+        app.fastflix.config.suppress_ffmpeg_version_warning = True
+        app.fastflix.config.save()
 
 
 def app_setup(
@@ -347,6 +420,22 @@ def app_setup(
                 except Exception:
                     logger.exception("Failed to download HDR10+ tool")
 
+    if app.fastflix.config.enable_history is None:
+        history_choice = yes_no_message(
+            t("Would you like to enable encoding history?")
+            + "\n\n"
+            + t(
+                "This keeps a local record of your completed encodings, letting you review the settings used for any past video and quickly re-apply them to new ones."
+            )
+            + "\n\n"
+            + t("All data is stored locally on your computer. Nothing is sent to the internet."),
+            title=t("Enable Encoding History"),
+        )
+        if history_choice is not None:
+            app.fastflix.config.enable_history = history_choice
+            if history_choice:
+                container.rebuild_menu()
+
     app.fastflix.config.save()
 
     # Run startup tasks (FFmpeg config, encoder init) through status bar
@@ -354,6 +443,7 @@ def app_setup(
         Task(t("Gather FFmpeg version"), ffmpeg_configuration),
         Task(t("Gather FFprobe version"), ffprobe_configuration),
         Task(t("Gather FFmpeg audio encoders"), ffmpeg_audio_encoders),
+        Task(t("Gather FFmpeg video encoders"), ffmpeg_video_encoders),
         Task(t("Determine OpenCL Support"), ffmpeg_opencl_support),
         Task(t("Initialize Encoders"), init_encoders),
     ]
@@ -365,6 +455,13 @@ def app_setup(
         container.status_bar.set_state(STATE_ERROR, t("Could not start FastFlix"))
         container.setEnabled(True)
         return app
+
+    # Check FFmpeg version (libavcodec 62 = FFmpeg 8.x)
+    if not app.fastflix.config.suppress_ffmpeg_version_warning and 0 < app.fastflix.libavcodec_version < 62:
+        if reusables.win_based:
+            _handle_ffmpeg_version_warning_windows(app, container)
+        else:
+            _handle_ffmpeg_version_warning_other(app)
 
     # Encoders are now populated — initialize the encoder UI
     container.main.init_encoders_ui()

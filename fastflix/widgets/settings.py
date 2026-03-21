@@ -18,7 +18,7 @@ from fastflix.naming import (
     generate_preview,
     validate_template,
 )
-from fastflix.shared import error_message, link
+from fastflix.shared import error_message, link, yes_no_message
 from fastflix.widgets.flow_layout import FlowLayout
 
 logger = logging.getLogger("fastflix")
@@ -62,6 +62,7 @@ class Settings(QtWidgets.QWidget):
         tab_widget = QtWidgets.QTabWidget()
         tab_widget.addTab(self._build_settings_tab(), t("Settings"))
         tab_widget.addTab(self._build_output_naming_tab(), t("Output Naming"))
+        tab_widget.addTab(self._build_audio_encoders_tab(), t("Audio Encoders"))
         tab_widget.addTab(self._build_locations_tab(), t("Application Locations"))
         main_layout.addWidget(tab_widget)
 
@@ -201,6 +202,11 @@ class Settings(QtWidgets.QWidget):
         layout.addWidget(self.disable_deinterlace_button, row, 0, 1, 3)
         row += 1
 
+        self.suppress_ffmpeg_version_warning = QtWidgets.QCheckBox(t("Suppress FFmpeg version warning on startup"))
+        self.suppress_ffmpeg_version_warning.setChecked(self.app.fastflix.config.suppress_ffmpeg_version_warning)
+        layout.addWidget(self.suppress_ffmpeg_version_warning, row, 0, 1, 3)
+        row += 1
+
         self.use_keyframes_for_preview = QtWidgets.QCheckBox(t("Use keyframes for preview images"))
         self.use_keyframes_for_preview.setChecked(self.app.fastflix.config.use_keyframes_for_preview)
         layout.addWidget(self.use_keyframes_for_preview, row, 0, 1, 3)
@@ -214,6 +220,36 @@ class Settings(QtWidgets.QWidget):
         self.auto_detect_subtitles = QtWidgets.QCheckBox(t("Auto-detect external subtitle files"))
         self.auto_detect_subtitles.setChecked(self.app.fastflix.config.auto_detect_subtitles)
         layout.addWidget(self.auto_detect_subtitles, row, 0, 1, 3)
+        row += 1
+
+        self.enable_history = QtWidgets.QCheckBox(t("Enable encoding history"))
+        self.enable_history.setChecked(bool(self.app.fastflix.config.enable_history))
+        layout.addWidget(self.enable_history, row, 0, 1, 3)
+        row += 1
+
+        # OpenCL Support
+        opencl_label = QtWidgets.QLabel(t("OpenCL Support"))
+        self.opencl_combo = QtWidgets.QComboBox()
+        self.opencl_combo.addItems([t("Auto"), t("Disable")])
+        if self.app.fastflix.config.opencl_support is False:
+            self.opencl_combo.setCurrentIndex(1)
+        else:
+            self.opencl_combo.setCurrentIndex(0)
+
+        self.opencl_status_label = QtWidgets.QLabel()
+        self._update_opencl_status()
+
+        opencl_detect_button = QtWidgets.QPushButton(t("Re-detect"))
+        opencl_detect_button.setFixedWidth(80)
+        opencl_detect_button.clicked.connect(self._run_opencl_detection)
+
+        opencl_row_layout = QtWidgets.QHBoxLayout()
+        opencl_row_layout.addWidget(self.opencl_combo)
+        opencl_row_layout.addWidget(self.opencl_status_label)
+        opencl_row_layout.addWidget(opencl_detect_button)
+
+        layout.addWidget(opencl_label, row, 0)
+        layout.addLayout(opencl_row_layout, row, 1, 1, 2)
         row += 1
 
         # Default Output Directory
@@ -434,6 +470,57 @@ class Settings(QtWidgets.QWidget):
                 chip.setStyleSheet(self._CHIP_STYLE_POST if is_post else self._CHIP_STYLE_PRE)
                 chip.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
 
+    def _build_audio_encoders_tab(self):
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout()
+
+        description = QtWidgets.QLabel(
+            t("Select which audio encoders appear in audio codec dropdown lists.")
+            + " "
+            + t("Only encoders supported by your FFmpeg build are shown.")
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        # Select All / Deselect All buttons
+        button_row = QtWidgets.QHBoxLayout()
+        select_all_button = QtWidgets.QPushButton(t("Select All"))
+        select_all_button.clicked.connect(lambda: self._set_all_audio_encoders(True))
+        deselect_all_button = QtWidgets.QPushButton(t("Deselect All"))
+        deselect_all_button.clicked.connect(lambda: self._set_all_audio_encoders(False))
+        button_row.addWidget(select_all_button)
+        button_row.addWidget(deselect_all_button)
+        button_row.addStretch()
+        layout.addLayout(button_row)
+
+        # Scrollable list of checkboxes
+        scroll_area = QtWidgets.QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_widget = QtWidgets.QWidget()
+        scroll_layout = QtWidgets.QVBoxLayout()
+
+        sane_set = set(self.app.fastflix.config.sane_audio_selection)
+        all_encoders = sorted(self.app.fastflix.audio_encoders or [])
+
+        self.audio_encoder_checkboxes = {}
+        for encoder_name in all_encoders:
+            cb = QtWidgets.QCheckBox(encoder_name)
+            cb.setChecked(encoder_name in sane_set)
+            self.audio_encoder_checkboxes[encoder_name] = cb
+            scroll_layout.addWidget(cb)
+
+        scroll_layout.addStretch()
+        scroll_widget.setLayout(scroll_layout)
+        scroll_area.setWidget(scroll_widget)
+        layout.addWidget(scroll_area)
+
+        tab.setLayout(layout)
+        return tab
+
+    def _set_all_audio_encoders(self, checked: bool):
+        for cb in self.audio_encoder_checkboxes.values():
+            cb.setChecked(checked)
+
     def _build_locations_tab(self):
         tab = QtWidgets.QWidget()
         layout = QtWidgets.QGridLayout()
@@ -606,6 +693,9 @@ class Settings(QtWidgets.QWidget):
         else:
             self.app.fastflix.config.work_path = new_work_dir
         self.app.fastflix.config.use_sane_audio = self.use_sane_audio.isChecked()
+        self.app.fastflix.config.sane_audio_selection = [
+            name for name, cb in self.audio_encoder_checkboxes.items() if cb.isChecked()
+        ]
         if self.theme.currentText() != self.app.fastflix.config.theme:
             restart_needed = True
         self.app.fastflix.config.theme = self.theme.currentText()
@@ -689,8 +779,28 @@ class Settings(QtWidgets.QWidget):
         self.app.fastflix.config.show_complete_message = self.show_complete_message.isChecked()
         self.app.fastflix.config.show_error_message = self.show_error_message.isChecked()
         self.app.fastflix.config.disable_deinterlace_check = self.disable_deinterlace_button.isChecked()
+        self.app.fastflix.config.suppress_ffmpeg_version_warning = self.suppress_ffmpeg_version_warning.isChecked()
         self.app.fastflix.config.use_keyframes_for_preview = self.use_keyframes_for_preview.isChecked()
         self.app.fastflix.config.auto_detect_subtitles = self.auto_detect_subtitles.isChecked()
+
+        new_history = self.enable_history.isChecked()
+        old_history = bool(self.app.fastflix.config.enable_history)
+        if old_history and not new_history:
+            from fastflix.models.history import clear_history
+
+            if yes_no_message(
+                t("Would you like to delete your encoding history data?"),
+                title=t("Delete History"),
+            ):
+                clear_history(self.app.fastflix.data_path)
+        self.app.fastflix.config.enable_history = new_history
+
+        if self.opencl_combo.currentIndex() == 1:  # Disable
+            self.app.fastflix.config.opencl_support = False
+            self.app.fastflix.opencl_support = False
+        else:  # Auto
+            self._run_opencl_detection()
+            self.app.fastflix.config.opencl_support = None
 
         self.main.config_update(encoder_reload_needed=encoder_reload_needed)
         self.app.fastflix.config.save()
@@ -751,6 +861,35 @@ class Settings(QtWidgets.QWidget):
         if not filename or not filename[0]:
             return
         self.gifski_path.setText(str(Path(filename[0]).absolute()))
+
+    def _update_opencl_status(self):
+        """Update the OpenCL status icon based on current detection state."""
+        if self.opencl_combo.currentIndex() == 1:  # Disable
+            self.opencl_status_label.setText("")
+        elif self.app.fastflix.opencl_support:
+            self.opencl_status_label.setText('<span style="color: green;">\u2714</span>')
+        else:
+            self.opencl_status_label.setText('<span style="color: red;">\u2718</span>')
+
+    def _run_opencl_detection(self):
+        """Run OpenCL detection using FFmpeg and update the status icon."""
+        from fastflix.flix import execute
+
+        cmd = execute(
+            [
+                str(self.app.fastflix.config.ffmpeg),
+                "-hide_banner",
+                "-log_level",
+                "error",
+                "-init_hw_device",
+                "opencl:0.0",
+                "-h",
+            ]
+        )
+        detected = cmd.returncode == 0
+        self.app.fastflix.opencl_support = detected
+        self._update_opencl_status()
+        logger.info(f"OpenCL re-detection result: {'supported' if detected else 'not supported'}")
 
     def select_output_directory(self):
         dirname = Path(self.output_path_line_edit.text()).parent

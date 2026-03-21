@@ -296,6 +296,7 @@ class Config(BaseModel):
     show_error_message: bool = True
 
     disable_cover_extraction: bool = False
+    suppress_ffmpeg_version_warning: bool = False
 
     # PGS to SRT OCR Settings
     enable_pgs_ocr: bool = False
@@ -306,6 +307,8 @@ class Config(BaseModel):
     use_keyframes_for_preview: bool = True
     terms_accepted: bool = False
     auto_detect_subtitles: bool = True
+    enable_history: bool | None = None
+    history_max_items: int = 50
 
     @property
     def pgs_ocr_available(self) -> bool:

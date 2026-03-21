@@ -124,9 +124,6 @@ def guess_bit_depth(pix_fmt: str, color_primaries: str = None) -> int:
         "yuva420p",
         "yuva422p",
         "yuva444p",
-        "yuvj420p",
-        "yuvj422p",
-        "yuvj444p",
     )
 
     ten = ("yuv420p10le", "yuv422p10le", "yuv444p10le", "gbrp10le", "gray10le", "p010le")
@@ -529,6 +526,21 @@ def ffmpeg_audio_encoders(app, config: Config) -> List:
         elif line.startswith(start_line):
             started = True
     app.fastflix.audio_encoders = encoders
+    return encoders
+
+
+def ffmpeg_video_encoders(app, config: Config) -> List:
+    cmd = execute([f"{config.ffmpeg}", "-hide_banner", "-encoders"])
+    encoders = []
+    start_line = " ------"
+    started = False
+    for line in cmd.stdout.splitlines():
+        if started:
+            if line.strip().startswith("V"):
+                encoders.append(line.strip().split(" ")[1])
+        elif line.startswith(start_line):
+            started = True
+    app.fastflix.video_encoders = encoders
     return encoders
 
 
